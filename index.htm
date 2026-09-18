@@ -162,7 +162,8 @@
         tr:nth-child(even) { background-color: #f8f9fa; }
         tr:hover { background-color: #e8f4f8; }
 
-        .leaderboard-filters { display: flex; gap: 10px; margin-bottom: 15px; }
+        .leaderboard-filters { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 15px; }
+        .leaderboard-filters select { flex: 1; min-width: 140px; }
 
         #confetti-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 999; }
         .confetti { position: absolute; width: 10px; height: 10px; opacity: 0.8; }
@@ -188,7 +189,7 @@
             <div class="auth-section">
                 <div id="google-btn-container" style="display: flex; justify-content: center; min-height: 40px;"></div>
                 <div id="user-welcome" style="display: none; color: var(--primary); font-weight: 800; font-size: 18px;"></div>
-                <p id="login-hint" style="margin: 8px 0 0; color: #636e72; font-size: 13px;">💡 參與「限時挑戰」及「排名模式」需先登入 Google</p>
+                <p id="login-hint" style="margin: 8px 0 0; color: #636e72; font-size: 13px;">💡 參與「限時挑戰」及「挑戰模式」需先登入 Google</p>
             </div>
 
             <div class="form-group">
@@ -203,8 +204,8 @@
             </div>
             
             <button class="btn" onclick="startGame('infinite')">♾️ 無限練習</button>
-            <button class="btn rank-btn" onclick="startGame('timed')">⏱️ 限時挑戰 (3分鐘/可自選難度)</button>
-            <button class="btn rank-btn" onclick="startGame('ranked')">🏆 排名模式 (3分鐘/漸進難度)</button>
+            <button class="btn rank-btn" onclick="startGame('timed')" style="background-color: #ff9f43;">⏱️ 限時挑戰 (3分鐘/可自選難度)</button>
+            <button class="btn rank-btn" onclick="startGame('ranked')">🏆 挑戰模式 (3分鐘/漸進難度)</button>
             
             <!-- 加入返回主選單的按鈕區塊 -->
             <div style="margin-top: 15px; display: flex; flex-direction: column; gap: 5px;">
@@ -280,8 +281,17 @@
         <div id="leaderboard-screen" class="screen">
             <h2>🏆 英雄排行榜</h2>
             <div class="leaderboard-filters">
+                <select id="filter-mode" onchange="fetchLeaderboard()">
+                    <option value="challenge">🏆 挑戰模式</option>
+                    <option value="timed_1">⏱️ 限時 - 🌱 一位 × 一位</option>
+                    <option value="timed_2">⏱️ 限時 - 🌿 兩位 × 一位</option>
+                    <option value="timed_3">⏱️ 限時 - 🌳 三位 × 一位</option>
+                    <option value="timed_4">⏱️ 限時 - 🔥 兩位 × 兩位</option>
+                    <option value="timed_5">⏱️ 限時 - ⚡ 三位 × 兩位</option>
+                </select>
+                
                 <select id="filter-class" onchange="fetchLeaderboard()">
-                    <option value="ALL">🌟 全級總排名</option>
+                    <option value="ALL">🌟 5年級總排名</option>
                     <option value="5A">5A 班</option>
                     <option value="5B">5B 班</option>
                     <option value="5C">5C 班</option>
@@ -448,14 +458,21 @@
                 btn.innerText = "上傳中...";
                 btn.disabled = true;
                 
-                const docRef = doc(db, "leaderboard", data.googleId);
+                // 設定 Document ID：結合 GoogleID、模式與題型，讓學生可以在不同模式下各自保有紀錄
+                const modeSuffix = data.gameMode === 'challenge' ? 'challenge' : `timed_${data.questionType}`;
+                const docId = `${data.googleId}_${modeSuffix}`;
+                
+                const docRef = doc(db, "leaderboard", docId);
                 const docSnap = await getDoc(docRef);
                 if (docSnap.exists()) {
                     const oldData = docSnap.data();
                     if (data.score <= oldData.score) {
-                        alert(`你之前的最高紀錄是 ${oldData.score} 分，這次沒有超越喔！再接再厲！💪`);
+                        alert(`你在此模式之前的最高紀錄是 ${oldData.score} 分，這次沒有超越喔！再接再厲！💪`);
                         btn.innerText = "🚀 上傳成績";
                         btn.disabled = false;
+                        
+                        // 自動將排行榜切換到對應的模式
+                        document.getElementById('filter-mode').value = modeSuffix;
                         showScreen('leaderboard-screen');
                         fetchLeaderboard();
                         return;
@@ -468,10 +485,13 @@
                     lastName: data.lastName,
                     score: data.score,
                     accuracy: data.accuracy,
+                    gameMode: data.gameMode,
+                    questionType: data.questionType,
                     timestamp: new Date()
                 });
                 
                 alert("太棒了！新紀錄上傳成功！🎉");
+                document.getElementById('filter-mode').value = modeSuffix;
                 showScreen('leaderboard-screen');
                 fetchLeaderboard();
             } catch (e) {
@@ -487,22 +507,38 @@
             const tbody = document.getElementById('leaderboard-body');
             tbody.innerHTML = "<tr><td colspan='6'>資料載入中... ⏳</td></tr>";
             
-            const filter = document.getElementById('filter-class').value;
-            let q;
-            if (filter === "ALL") {
-                q = query(collection(db, "leaderboard"), orderBy("score", "desc"), limit(30));
-            } else {
-                q = query(collection(db, "leaderboard"), where("class", "==", filter), orderBy("score", "desc"), limit(30));
+            const modeFilter = document.getElementById('filter-mode').value;
+            const classFilter = document.getElementById('filter-class').value;
+            
+            // 解析查詢的模式與題型
+            let gameMode = 'challenge';
+            let qType = 0;
+            if (modeFilter.startsWith('timed_')) {
+                gameMode = 'timed';
+                qType = parseInt(modeFilter.split('_')[1]);
+            }
+            
+            let queryConditions = [
+                where("gameMode", "==", gameMode),
+                where("questionType", "==", qType)
+            ];
+            
+            if (classFilter !== "ALL") {
+                queryConditions.push(where("class", "==", classFilter));
             }
 
             try {
+                const q = query(collection(db, "leaderboard"), ...queryConditions, orderBy("score", "desc"), limit(30));
                 const querySnapshot = await getDocs(q);
+                
                 tbody.innerHTML = "";
                 let rank = 1;
+                
                 if(querySnapshot.empty) {
                     tbody.innerHTML = "<tr><td colspan='6'>暫無資料，快來成為第一個挑戰者！</td></tr>";
                     return;
                 }
+                
                 querySnapshot.forEach((doc) => {
                     const data = doc.data();
                     let rankDisplay = rank === 1 ? "🥇 1" : rank === 2 ? "🥈 2" : rank === 3 ? "🥉 3" : rank;
@@ -521,7 +557,11 @@
                 });
             } catch (e) {
                 console.error("Error fetching docs: ", e);
-                tbody.innerHTML = "<tr><td colspan='6'>載入失敗，請確認已在 Firebase 建立複合索引。</td></tr>";
+                tbody.innerHTML = `<tr><td colspan='6' style="color:red; font-size:13px;">
+                    載入失敗。<br>
+                    開發者注意：Firebase 需要建立複合索引 (Composite Index)。<br>
+                    請打開瀏覽器控制台 (F12)，點擊 Firebase 產生的錯誤連結來自動建立索引。
+                </td></tr>`;
             }
         };
     </script>
@@ -719,7 +759,10 @@
                 lastName: currentUser.lastName,
                 googleId: currentUser.id,
                 score: stats.score,
-                accuracy: acc
+                accuracy: acc,
+                // 傳遞目前模式與題型資訊給 Firebase 儲存
+                gameMode: mode === 'ranked' ? 'challenge' : 'timed',
+                questionType: mode === 'ranked' ? 0 : typeLevel 
             };
 
             if(window.saveToFirebase) {
